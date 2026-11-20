@@ -28,7 +28,9 @@ import org.maplibre.compose.overlay.MapOverlayScope
  *  still make it a double tap or a quick zoom. [onEarlyTap] is asked about a tap the moment the
  *  finger lifts. It returns null if it has no use for the tap, which then takes the usual route.
  *  Otherwise the tap is done with: the click the map delivers for it later skips the layers and
- *  only still goes to [onMapClick], and only if [onEarlyTap] returned [ClickResult.Pass]. */
+ *  only still goes to [onMapClick], and only if [onEarlyTap] returned [ClickResult.Pass]. A
+ *  second tap on the same spot within the double tap timeout is then kept from the map, so
+ *  that it does not zoom. */
 @Composable
 fun MainMap(
     state: MapState,
@@ -45,12 +47,25 @@ fun MainMap(
     val currentOnEarlyTap by rememberUpdatedState(onEarlyTap)
 
     MaplibreMap(
-        // only watches, never consumes: the map sees every event as before
+        // watches every event before the map sees it
         modifier = modifier.pointerInput(Unit) {
             var previousDown: Offset? = null
             var previousUpTime = 0L
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                // the second tap of a double tap or the start of a quick zoom belongs to the map
+                val isSecondTap = isSecondTap(
+                    previous = previousDown,
+                    previousUpTime = previousUpTime,
+                    down = down.position,
+                    downTime = down.uptimeMillis,
+                    doubleTapTimeoutMillis = viewConfiguration.doubleTapTimeoutMillis,
+                    doubleTapSlop = DoubleTapSlop.toPx(),
+                )
+                // ... unless the first tap is done with already: the map ignores a consumed tap
+                val previousTap = earlyTaps.last?.takeIf { it.upTime == previousUpTime }
+                if (isSecondTap && previousTap?.result != null) down.consume()
+
                 var isTap = true
                 var upTime: Long
                 while (true) {
@@ -67,15 +82,6 @@ fun MainMap(
                 if (upTime - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis) {
                     isTap = false
                 }
-                // the second tap of a double tap or the start of a quick zoom belongs to the map
-                val isSecondTap = isSecondTap(
-                    previous = previousDown,
-                    previousUpTime = previousUpTime,
-                    down = down.position,
-                    downTime = down.uptimeMillis,
-                    doubleTapTimeoutMillis = viewConfiguration.doubleTapTimeoutMillis,
-                    doubleTapSlop = DoubleTapSlop.toPx(),
-                )
                 previousDown = down.position
                 previousUpTime = upTime
 
