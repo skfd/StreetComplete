@@ -10,9 +10,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.maplibre.compose.interaction.ClickEvent
@@ -27,8 +29,9 @@ import org.maplibre.compose.overlay.MapOverlayScope
  *
  *  The map holds a tap back for the double tap timeout (300 ms), because a second tap could
  *  still make it a double tap or a quick zoom. [onEarlyTap] is asked about a tap the moment the
- *  finger lifts. If it returns true, the tap is done with and the click the map delivers for it
- *  later is dropped. */
+ *  finger lifts. If it returns true, the tap is done with: the click the map delivers for it
+ *  later is dropped, and a second tap on the same spot within the double tap timeout is kept
+ *  from the map, so that it does not zoom. */
 @Composable
 fun MainMap(
     state: MapState,
@@ -43,14 +46,22 @@ fun MainMap(
     val scope = rememberCoroutineScope()
     val currentOnEarlyTap by rememberUpdatedState(onEarlyTap)
     var earlyTapJob by remember { mutableStateOf<Job?>(null) }
-    // when the finger lifted for the tap that onEarlyTap is done with
-    var handledTapTime by remember { mutableStateOf<Long?>(null) }
+    // the tap that onEarlyTap is done with
+    var handledTap by remember { mutableStateOf<Tap?>(null) }
 
     MaplibreMap(
-        // only watches, never consumes: the map sees every event as before
+        // watches every event before the map sees it
         modifier = modifier.pointerInput(Unit) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                // the map would take a second tap on what is selected already for a double tap
+                // and zoom. It ignores a tap that is consumed
+                val isSecondTap = handledTap?.let {
+                    down.uptimeMillis - it.upTime <= viewConfiguration.doubleTapTimeoutMillis &&
+                    (down.position - it.position).getDistance() <= DoubleTapSlop.toPx()
+                } == true
+                if (isSecondTap) down.consume()
+
                 var isTap = true
                 var upTime: Long
                 while (true) {
@@ -64,10 +75,12 @@ fun MainMap(
                     upTime = event.changes.maxOf { it.uptimeMillis }
                     if (event.changes.none { it.pressed }) break
                 }
-                if (isTap && upTime - down.uptimeMillis < viewConfiguration.longPressTimeoutMillis) {
+                if (isTap && !isSecondTap &&
+                    upTime - down.uptimeMillis < viewConfiguration.longPressTimeoutMillis
+                ) {
                     val offset = DpOffset(down.position.x.toDp(), down.position.y.toDp())
                     earlyTapJob = scope.launch {
-                        if (currentOnEarlyTap(offset)) handledTapTime = upTime
+                        if (currentOnEarlyTap(offset)) handledTap = Tap(down.position, upTime)
                     }
                 }
             }
@@ -88,7 +101,7 @@ fun MainMap(
                     onEvent { event ->
                         // an early look that is still not finished by now loses to the usual route
                         earlyTapJob?.cancel()
-                        if (event.uptimeMillis == handledTapTime) ClickResult.Consume
+                        if (event.uptimeMillis == handledTap?.upTime) ClickResult.Consume
                         else ClickResult.Pass
                     }
                     onUnhandled(onMapClick)
@@ -99,3 +112,8 @@ fun MainMap(
         overlay = overlay,
     )
 }
+
+private class Tap(val position: Offset, val upTime: Long)
+
+/** the distance within which the map takes two taps for a double tap */
+private val DoubleTapSlop = 100.dp
