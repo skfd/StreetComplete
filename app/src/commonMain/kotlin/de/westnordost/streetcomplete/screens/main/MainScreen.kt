@@ -489,6 +489,29 @@ fun MainScreen(
                 .onGloballyPositioned { mapPositionInWindow = it.positionInWindow() },
             onPan = { cameraState.onPan(location != null) },
             onRotate = { cameraState.onRotate(location != null) },
+            // A tap on a pin selects it at once. Nothing with a click handler lies above the
+            // pins, so asking only that layer finds what the map would find later, too
+            onEarlyTap = { offset ->
+                val properties = mapState
+                    .queryRenderedFeatures(offset, setOf("pins-layer"))
+                    .firstOrNull()?.properties
+                val selection = when (pinsMode) {
+                    PinsMode.Quests ->
+                        properties?.let { mapViewModel.getQuestKey(it) }
+                            ?.let { MainSheetSelection.Quest(it) }
+                    PinsMode.EditHistory ->
+                        properties?.let { mapViewModel.getEditKey(it) }
+                            ?.let { MainSheetSelection.EditHistory(it) }
+                    PinsMode.None -> null
+                }
+                if (selection == null) {
+                    null
+                } else {
+                    pendingSheetSelection = selection
+                    // as in MainMapContent: with a sheet open, the click also goes on to the map
+                    if (sheet.isOpen) ClickResult.Pass else ClickResult.Consume
+                }
+            },
             onMapClick = { event ->
                 when (sheet.selection) {
                     null -> {}
